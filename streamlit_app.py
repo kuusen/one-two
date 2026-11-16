@@ -97,7 +97,7 @@ selected = next((o for o in options if o["label"] == selected_label), None)
 with st.form("calc"):
     st.markdown("Параметры расчёта", anchors=False)
 
-    stop_rub = st.number_input("Размер стопа, ₽", min_value=0.01, value=1000.0, step=100.0)
+    stop_rub = st.number_input("Размер стопа, ₽", min_value=0.01, value=3000.0, step=100.0)
 
     if selected and selected["type"] == "futures":
         ticks = st.number_input("Стоп в тиках", min_value=1, value=10, step=1)
