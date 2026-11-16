@@ -2,18 +2,18 @@ import math
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Калькулятор позиции", page_icon="", layout="centered")
+st.set_page_config(page_title="Калькулятор позиции", page_icon="📊", layout="centered")
 st.title("Калькулятор позиции", anchor=False)
 
-# ---------- Загрузка списков инструментов ----------
+# ---------- Загрузка списков ----------
 
 @st.cache_data(ttl=600)
 def load_stocks():
-    """Список акций TQBR: [(secid, shortname), ...]"""
+    """Список акций TQBR: [(secid, shortname, lotsize), ...]"""
     url = (
         "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/"
         "securities.json?iss.meta=off&iss.only=securities"
-        "&securities.columns=SECID,SHORTNAME"
+        "&securities.columns=SECID,SHORTNAME,LOTSIZE"
     )
     try:
         r = requests.get(url, timeout=15)
@@ -21,13 +21,15 @@ def load_stocks():
         cols = block.get("columns", [])
         data = block.get("data", [])
         idx = {name: i for i, name in enumerate(cols)}
-        return [
-            (row[idx["SECID"]], row[idx["SHORTNAME"]] or row[idx["SECID"]])
-            for row in data
-        ]
+        result = []
+        for row in data:
+            secid = row[idx["SECID"]]
+            name = row[idx["SHORTNAME"]] or secid
+            lotsize = row[idx["LOTSIZE"]] or 1
+            result.append((secid, name, int(lotsize)))
+        return result
     except Exception:
         return []
-
 
 @st.cache_data(ttl=600)
 def load_futures():
@@ -54,36 +56,33 @@ def load_futures():
     except Exception:
         return []
 
-
 stocks = load_stocks()
 futures = load_futures()
 
-# ---------- Формируем список опций ----------
-# step_price: для акций — всегда 1, для фьючерсов — STEPPRICE
+# ---------- Формируем опции ----------
 
 options = []
 
-for secid, name in stocks:
+for secid, name, lotsize in stocks:
     options.append({
         "label": f"{secid} — {name} (акция)",
         "secid": secid,
-        "type": "Акция",
-        "step_price": 1.0,
+        "type": "stock",
+        "lotsize": lotsize,
     })
 
 for secid, name, stepprice in futures:
     options.append({
         "label": f"{secid} — {name} (фьючерс)",
         "secid": secid,
-        "type": "Фьючерс",
+        "type": "futures",
         "step_price": stepprice,
     })
 
 options.sort(key=lambda x: x["label"])
 labels = [o["label"] for o in options]
 
-
-# ---------- Выбор инструмента (вне формы → реактивный UI) ----------
+# ---------- Выбор инструмента ----------
 
 selected_label = st.selectbox(
     "Выберите тикер",
@@ -93,18 +92,30 @@ selected_label = st.selectbox(
 )
 selected = next((o for o in options if o["label"] == selected_label), None)
 
-
-# ---------- Форма расчёта ----------
+# ---------- Форма ----------
 
 with st.form("calc"):
     st.markdown("Параметры расчёта", anchors=False)
-    col1, col2 = st.columns(2)
-    with col1:
-        stop_rub = st.number_input("Размер стопа, ₽", min_value=0.01, value=1000.0, step=100.0)
-    with col2:
-        ticks = st.number_input("Стоп в тиках", min_value=1, value=10, step=1)
 
-    manual_step = st.checkbox("Ввести стоимость шага цены вручную")
+    stop_rub = st.number_input("Размер стопа, ₽", min_value=0.01, value=1000.0, step=100.0)
+
+    if selected and selected["type"] == "futures":
+        ticks = st.number_input("Стоп в тиках", min_value=1, value=10, step=1)
+        rub_to_stop = None
+        lotsize = None
+    else:
+        rub_to_stop = st.number_input(
+            "Рублей до стопа",
+            min_value=0.01,
+            value=0.37,
+            step=0.01,
+            format="%.2f",
+            help="Разница между ценой покупки и ценой стопа в рублях (на 1 бумагу)"
+        )
+        lotsize = selected["lotsize"] if selected else 1
+        st.caption(f"Размер лота: {lotsize}")
+
+    manual_step = st.checkbox("Ввести стоимость шага цены вручную (только для фьючерсов)")
     step_manual = 0.0
     if manual_step:
         step_manual = st.number_input(
@@ -113,37 +124,60 @@ with st.form("calc"):
 
     submitted = st.form_submit_button("Рассчитать", use_container_width=True)
 
-
 # ---------- Расчёт ----------
 
 if submitted:
-    step_price = None
-    instrument_label = ""
+    if selected is None:
+        st.error("Инструмент не выбран.")
+        st.stop()
 
-    if manual_step:
-        step_price = step_manual
-        instrument_label = "ручной ввод шага"
+    if selected["type"] == "futures":
+        # Логика для фьючерсов
+        step_price = None
+        instrument_label = ""
 
-    elif options and selected:
-        step_price = selected["step_price"]
-        instrument_label = selected["label"]
+        if manual_step:
+            step_price = step_manual
+            instrument_label = "ручной ввод шага"
+        else:
+            step_price = selected["step_price"]
+            instrument_label = selected["label"]
+
+        if step_price and step_price > 0:
+            st.success(f"Инструмент: **{instrument_label}** · шаг цены = **{step_price} ₽**")
+            qty_raw = stop_rub / (ticks * step_price)
+            qty = math.floor(qty_raw)
+
+            st.metric("Количество контрактов", f"{qty}")
+            st.caption(f"Точное значение до округления: {qty_raw:.4f}")
+
+            if qty < 1:
+                st.warning("Размер стопа слишком мал — округлённое количество меньше 1.")
+
+            with st.expander("Показать расчёт"):
+                st.write("**Формула:** `qty = stop_rub / (ticks × step_price)`")
+                st.write(f"`qty = {stop_rub} / ({ticks} × {step_price}) = {qty_raw:.4f} → {qty}`")
+        else:
+            st.error("Шаг цены не определён. Включите ручной ввод.")
+
     else:
-        st.error("Список инструментов не загрузился. Используйте ручной ввод.")
+        # Логика для акций
+        if rub_to_stop <= 0:
+            st.error("Значение «Рублей до стопа» должно быть положительным.")
+            st.stop()
 
-    if step_price and step_price > 0:
-        st.success(f"Инструмент: **{instrument_label}** · шаг цены = **{step_price} ₽**")
+        qty_lots_raw = stop_rub / (rub_to_stop * lotsize)
+        qty_lots = math.floor(qty_lots_raw)
+        qty_shares = qty_lots * lotsize
 
-        qty_raw = stop_rub / (ticks * step_price)
-        qty = math.floor(qty_raw)
+        st.success(f"Инструмент: **{selected['label']}** · лот = **{lotsize}**")
+        st.metric("Количество лотов", f"{qty_lots}")
+        st.caption(f"Количество бумаг: {qty_shares}")
 
-        st.metric("Количество бумаг", f"{qty}")
-        st.caption(f"Точное значение до округления: {qty_raw:.4f}")
-
-        if qty < 1:
-            st.warning("Размер стопа слишком мал — округлённое количество меньше 1.")
+        if qty_lots < 1:
+            st.warning("Размер стопа слишком мал — округлённое количество лотов меньше 1.")
 
         with st.expander("Показать расчёт"):
-            st.write("**Формула:** `qty = stop_rub / (ticks × step_price)`")
-            st.write(f"`qty = {stop_rub} / ({ticks} × {step_price}) = {qty_raw:.4f} → {qty}`")
-    elif not step_price:
-        st.error("Шаг цены не определён. Проверьте тикер или включите ручной ввод шага.")
+            st.write("**Формула:** `qty_lots = stop_rub / (rub_to_stop × lotsize)`")
+            st.write(f"`qty_lots = {stop_rub} / ({rub_to_stop:.2f} × {lotsize}) = {qty_lots_raw:.4f} → {qty_lots}`")
+            st.write(f"`qty_shares = {qty_lots} × {lotsize} = {qty_shares}`")
