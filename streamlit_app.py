@@ -115,13 +115,6 @@ with st.form("calc"):
         lotsize = selected["lotsize"] if selected else 1
         st.caption(f"Размер лота: {lotsize}")
 
-    manual_step = st.checkbox("Ввести стоимость шага цены вручную (только для фьючерсов)")
-    step_manual = 0.0
-    if manual_step:
-        step_manual = st.number_input(
-            "Стоимость шага цены, ₽", min_value=0.0, value=0.01, step=0.01, format="%.6f"
-        )
-
     submitted = st.form_submit_button("Рассчитать", use_container_width=True)
 
 # ---------- Расчёт ----------
@@ -133,18 +126,10 @@ if submitted:
 
     if selected["type"] == "futures":
         # Логика для фьючерсов
-        step_price = None
-        instrument_label = ""
-
-        if manual_step:
-            step_price = step_manual
-            instrument_label = "ручной ввод шага"
-        else:
-            step_price = selected["step_price"]
-            instrument_label = selected["label"]
+        step_price = selected["step_price"]
 
         if step_price and step_price > 0:
-            st.success(f"Инструмент: **{instrument_label}** · шаг цены = **{step_price} ₽**")
+            st.success(f"Инструмент: **{selected['label']}** · шаг цены = **{step_price} ₽**")
             qty_raw = stop_rub / (ticks * step_price)
             qty = math.floor(qty_raw)
 
@@ -158,7 +143,7 @@ if submitted:
                 st.write("**Формула:** `qty = stop_rub / (ticks × step_price)`")
                 st.write(f"`qty = {stop_rub} / ({ticks} × {step_price}) = {qty_raw:.4f} → {qty}`")
         else:
-            st.error("Шаг цены не определён. Включите ручной ввод.")
+            st.error("Шаг цены не определён в базе MOEX.")
 
     else:
         # Логика для акций
