@@ -107,7 +107,7 @@ with st.form("calc"):
         rub_to_stop = st.number_input(
             "Рублей до стопа",
             min_value=0.01,
-            value=0,
+            value=0.5,
             step=0.01,
             format="%.2f",
             help="Разница между ценой покупки и ценой стопа в рублях (на 1 бумагу)"
